@@ -21,7 +21,7 @@ FUZZY_MATCH_THRESHOLD = 80
 STOCK_URL_KEY = 'last_stock_url' 
 
 # Список сотрудников
-WORKERS_LIST = ["Выберите сотрудника...", "Хазбулат Р.", "Никулин Д.", "Волыкина Е.", "Ивонин К.", "Никанов Е.", "Губанов А.", "Яшковец В."]
+WORKERS_LIST = ["Выберите сотрудника...", "Хазбулат Р.", "Никулин Д.", "Волыкина Е.", "Ивонин К.", "Никонов Е.", "Губанов А.", "Яшковец В."]
 
 st.set_page_config(page_title="Склад обьекта", layout="wide")
 
@@ -832,4 +832,5 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
