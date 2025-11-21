@@ -36,7 +36,7 @@ def check_password():
             is_logged_in = True
 
     if not is_logged_in:
-        st.title("🔐 Вход в систему")
+        st.title("🔐 Склад объекта")
         
         # --- ДВЕ КОЛОНКИ ДЛЯ ЛОГИНА И ИЗОБРАЖЕНИЯ ---
         c1, c2 = st.columns([1, 2])
@@ -55,7 +55,7 @@ def check_password():
         
         with c2:
             IMAGE_URL = "https://i.postimg.cc/8P1LJY52/photo-2025-11-20-23-07-29-(1).jpg"
-            st.image(IMAGE_URL, caption='Рабочий кот', use_container_width='true')
+            st.image(IMAGE_URL, caption='Вас приветсвует Василий', use_container_width='true')
             
         return False
     return True
@@ -832,5 +832,6 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
 
