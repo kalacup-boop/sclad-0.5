@@ -55,7 +55,7 @@ def check_password():
         
         with c2:
             IMAGE_URL = "https://i.postimg.cc/3rLM10gN/photo-2025-11-21-23-59-22-Photoroom.png"
-            st.image(IMAGE_URL, caption='Вас приветсвует Василий', use_container_width='true')
+            st.image(IMAGE_URL, caption='Сделано в Gemini', use_container_width='true')
             
         return False
     return True
@@ -832,6 +832,7 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
 
 
