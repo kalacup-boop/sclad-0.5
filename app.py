@@ -501,7 +501,7 @@ with st.sidebar:
         logout()
 
 # --- ОСНОВНОЕ ОКНО ---
-st.title("🏗️ Склад обьекта")
+st.title("🏗️ Название объектов")
 
 projects = get_projects()
 
@@ -832,6 +832,7 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
 
 
