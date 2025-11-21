@@ -36,7 +36,7 @@ def check_password():
             is_logged_in = True
 
     if not is_logged_in:
-        st.title("🔐 Склад объекта")
+        st.title("🔐Склад объекта")
         
         # --- ДВЕ КОЛОНКИ ДЛЯ ЛОГИНА И ИЗОБРАЖЕНИЯ ---
         c1, c2 = st.columns([1, 2])
@@ -832,6 +832,7 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
 
 
