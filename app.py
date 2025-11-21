@@ -54,7 +54,7 @@ def check_password():
                     st.error("Неверный логин или пароль")
         
         with c2:
-            IMAGE_URL = "https://i.postimg.cc/8P1LJY52/photo-2025-11-20-23-07-29-(1).jpg"
+            IMAGE_URL = "https://i.postimg.cc/wj19LcZL/photo-2025-11-21-23-59-22.jpg"
             st.image(IMAGE_URL, caption='Вас приветсвует Василий', use_container_width='true')
             
         return False
@@ -832,6 +832,7 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
 
 
