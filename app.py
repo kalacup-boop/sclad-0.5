@@ -7,6 +7,16 @@ import requests
 from thefuzz import fuzz
 from thefuzz import process
 
+# --- ДОБАВЬТЕ ЭТО В САМОЕ НАЧАЛО app.py (ПОСЛЕ ИМПОРТОВ) ---
+
+# Это должно быть ДО check_password() и load_db()
+if "storage" not in st.secrets or "database_json" not in st.secrets["storage"]:
+    st.error("!!! ПРОВЕРКА СЕКРЕТОВ ПРОВАЛЕНА !!!")
+    st.error("Убедитесь, что [storage] и database_json = \"{}\" присутствуют в secrets.toml.")
+    st.stop()
+else:
+    st.success("ПРОВЕРКА СЕКРЕТОВ УСПЕШНА. Секция [storage] найдена.")
+
 # --- КОНСТАНТЫ ---
 FUZZY_MATCH_THRESHOLD = 80
 STOCK_URL_KEY = 'last_stock_url'
@@ -849,3 +859,4 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
