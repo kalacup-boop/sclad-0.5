@@ -5,3 +5,5 @@ requests
 thefuzz
 psycopg2-binary
 openpyxl 
+sqlalchemy
+psycopg2-binary
