@@ -24,7 +24,7 @@ try:
     conn = st.connection(
         "supabase",  # Временное имя
         type="sql",
-        url="postgresql://postgres:NUAIo6bUbSoQ01oY@db.vhnzugddsmrutnagawhi.supabase.co:5432/postgres"
+        url="postgresql://postgres:.z4._bQNf85quP*@db.nmqihnlcdqysngirqwba.supabase.co:5432/postgres"
     )
     # Если тест успешен, это сообщение увидим вместо ошибки
     # st.success("✅ Подключение к Supabase успешно (тест bypass).") 
@@ -773,5 +773,6 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
 
