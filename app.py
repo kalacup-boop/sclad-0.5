@@ -22,7 +22,7 @@ try:
     # 🚨 ВРЕМЕННЫЙ ДИАГНОСТИЧЕСКИЙ ТЕСТ: ИСПОЛЬЗУЕМ ПАРАМЕТРЫ НАПРЯМУЮ 🚨
     # Это позволяет полностью обойти чтение secrets.toml
     conn = st.connection(
-        "supabase_test",  # Временное имя
+        "supabase",  # Временное имя
         type="sql",
         url="postgresql://postgres:NUAIo6bUbSoQ01oY@db.vhnzugddsmrutnagawhi.supabase.co:5432/postgres"
     )
