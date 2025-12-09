@@ -6,6 +6,10 @@ import io
 import requests
 from thefuzz import fuzz
 from thefuzz import process
+import streamlit as st
+import os
+
+st.sidebar.info(f"Текущая рабочая директория: {os.getcwd()}")
 
 # --- КОНСТАНТЫ ---
 FUZZY_MATCH_THRESHOLD = 80
@@ -856,5 +860,6 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
 
 
