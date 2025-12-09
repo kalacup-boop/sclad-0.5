@@ -27,8 +27,15 @@ st.set_page_config(page_title="Склад обьекта", layout="wide")
 
 def check_password():
     """Проверяет пароль для доступа."""
+    
+    # 1. Извлечение настроенного пароля
+    # Эта строка корректно извлекает значение 'password' из секции [password]
+    # Если секции или ключа нет, используется "sclad_admin" по умолчанию.
+    configured_password = st.secrets.get("password", {}).get("password", "sclad_admin")
+    
     def password_entered():
-        if st.session_state["password"] == st.secrets.get("password", "sclad_admin"):
+        # Сравниваем введенный пароль с ожидаемым
+        if st.session_state["password"] == configured_password:
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
