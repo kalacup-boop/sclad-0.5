@@ -1,78 +1,375 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import time
+import json
 import io
 import requests
 from thefuzz import fuzz
 from thefuzz import process
 
-# --- КОНФИГУРАЦИЯ ---
+# --- КОНСТАНТЫ ---
 FUZZY_MATCH_THRESHOLD = 80
 STOCK_URL_KEY = 'last_stock_url'
 WORKERS_LIST = ["Выберите сотрудника...", "Хазбулат Р.", "Никулин Д.", "Волыкина Е.", "Ивонин К.", "Никонов Е.", "Губанов А.", "Яшковец В."]
 
+# Базовая структура БД для первого запуска
+EMPTY_DB_STRUCTURE = {
+    'projects': pd.DataFrame(columns=['id', 'name']),
+    'materials': pd.DataFrame(columns=['id', 'project_id', 'name', 'unit', 'planned_qty']),
+    'shipments': pd.DataFrame(columns=['id', 'material_id', 'qty', 'user_name', 'arrival_date', 'store', 'doc_number', 'note', 'op_type'])
+}
+
 st.set_page_config(page_title="Склад обьекта", layout="wide")
 
 # #######################################################
-# 🚀 SUPABASE / POSTGRESQL КОННЕКТОР
+# 🔐 СЕРВИС: АУТЕНТИФИКАЦИЯ
 # #######################################################
 
-try:
-    # 🚨 ВРЕМЕННЫЙ ДИАГНОСТИЧЕСКИЙ ТЕСТ: ИСПОЛЬЗУЕМ ПАРАМЕТРЫ НАПРЯМУЮ 🚨
-    # Это позволяет полностью обойти чтение secrets.toml
-    conn = st.connection(
-        "supabase",  # Временное имя
-        type="sql",
-        url="postgresql://postgres:.z4._bQNf85quP*@db.nmqihnlcdqysngirqwba.supabase.co:5432/postgres"
-    )
-    # Если тест успешен, это сообщение увидим вместо ошибки
-    # st.success("✅ Подключение к Supabase успешно (тест bypass).") 
-    
-except Exception as e:
-    st.error(f"❌ Ошибка подключения к базе данных Supabase. Проверьте настройки secrets.toml и статус проекта: {e}")
-    # st.stop() 
-    pass
-
-# --- АВТОРИЗАЦИЯ (Без изменений) ---
 def check_password():
-    is_logged_in = st.session_state.get('authenticated', False)
-    # ... (Логика авторизации) ...
-    if not is_logged_in:
-        params = st.query_params
-        if params.get("auth") == "true":
-            st.session_state['authenticated'] = True
-            is_logged_in = True
+    """Проверяет пароль для доступа."""
+    def password_entered():
+        if st.session_state["password"] == st.secrets.get("password", "sclad_admin"):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+    
+    if st.session_state.get("password_correct", False):
+        return True
 
-    if not is_logged_in:
-        st.title("🔐Склад объекта")
-        
-        c1, c2 = st.columns([1, 2])
-
-        with c1:
-            username = st.text_input("Логин")
-            password = st.text_input("Пароль", type="password")
-            if st.button("Войти", type="primary"):
-                if username == "admin" and password == "admin":
-                    st.session_state['authenticated'] = True
-                    st.query_params["auth"] = "true"
-                    st.rerun()
-                else:
-                    st.error("Неверный логин или пароль")
-        
-        with c2:
-            IMAGE_URL = "https://i.postimg.cc/3rLM10gN/photo-2025-11-21-23-59-22-Photoroom.png"
-            st.image(IMAGE_URL, caption='Сделано в Gemini', use_container_width='true')
-            
-        return False
-    return True
+    st.text_input(
+        "Пароль", type="password", on_change=password_entered, key="password"
+    )
+    if st.session_state.get("password_correct") is False:
+        st.error("😕 Неверный пароль")
+    return False
 
 def logout():
-    st.session_state['authenticated'] = False
-    st.query_params.clear()
+    """Выход из аккаунта."""
+    if "password_correct" in st.session_state:
+        del st.session_state["password_correct"]
     st.rerun()
 
-# --- ФУНКЦИИ УТИЛИТ (Без изменений) ---
+# #######################################################
+# 💾 ФУНКЦИИ ХРАНЕНИЯ В SECRETS (CRUD)
+# #######################################################
+
+def enforce_types(df, table_name):
+    """Приводит столбцы к нужным типам после загрузки из JSON."""
+    if df.empty:
+        return EMPTY_DB_STRUCTURE[table_name].copy()
+    
+    if table_name == 'projects':
+        df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+    elif table_name == 'materials':
+        df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+        df['project_id'] = pd.to_numeric(df['project_id'], errors='coerce').fillna(0).astype(int)
+        df['planned_qty'] = pd.to_numeric(df['planned_qty'], errors='coerce').fillna(0.0)
+    elif table_name == 'shipments':
+        df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+        df['material_id'] = pd.to_numeric(df['material_id'], errors='coerce').fillna(0).astype(int)
+        df['qty'] = pd.to_numeric(df['qty'], errors='coerce').fillna(0.0)
+    return df
+
+@st.cache_data(ttl=5)
+def load_db():
+    """Загружает всю базу данных из secrets.toml (кэшируется на 5 секунд)."""
+    try:
+        db_json = st.secrets.storage.database_json
+        
+        # Если база данных пуста, инициализируем пустую структуру
+        if db_json in ["{}", ""]:
+            return EMPTY_DB_STRUCTURE
+            
+        db_data = json.loads(db_json)
+        db = {}
+        
+        for key, df_json in db_data.items():
+            df = pd.read_json(df_json, orient='split')
+            db[key] = enforce_types(df, key)
+            
+        return db
+        
+    except Exception as e:
+        # Если секрет не найден или невалиден, инициализируем пустую структуру
+        if 'storage' not in st.secrets or 'database_json' not in st.secrets.storage:
+             st.error("❌ Ошибка: Не найдена секция [storage] в secrets.toml. Проверьте файл.")
+             st.stop()
+        st.warning(f"Ошибка загрузки базы данных: {e}. Создается пустая структура.")
+        return EMPTY_DB_STRUCTURE
+
+def save_db(db):
+    """Сохраняет всю базу данных обратно в secrets.toml."""
+    try:
+        # Для сохранения мы должны отключить кэш!
+        st.cache_data.clear() 
+        
+        db_data = {}
+        for key, df in db.items():
+            # Преобразуем DataFrame в JSON-строку
+            db_data[key] = df.to_json(orient='split', date_format='iso')
+
+        # Сохраняем объединенный JSON в секреты
+        st.secrets["storage"]["database_json"] = json.dumps(db_data)
+        st.toast("💾 Данные сохранены в Streamlit Secrets.", icon="✅")
+        return True
+    except Exception as e:
+        st.error(f"❌ Ошибка сохранения в Streamlit Secrets: {e}")
+        return False
+
+# #######################################################
+# 🗃️ ФУНКЦИИ API (ОБНОВЛЕНО ДЛЯ IN-MEMORY DF)
+# #######################################################
+
+def get_projects():
+    db = load_db()
+    return db['projects'].sort_values(by='name')
+
+def add_project(name):
+    db = load_db()
+    projects_df = db['projects']
+    
+    if name in projects_df['name'].tolist():
+        return False
+        
+    new_id = projects_df['id'].max() + 1 if not projects_df.empty else 1
+    new_row = pd.DataFrame([{'id': new_id, 'name': name}])
+    
+    db['projects'] = pd.concat([projects_df, new_row], ignore_index=True)
+    
+    return save_db(db)
+
+def update_project_name(project_id, new_name):
+    db = load_db()
+    projects_df = db['projects']
+    pid = int(project_id)
+    
+    if new_name in projects_df['name'].tolist():
+        return False
+        
+    projects_df.loc[projects_df['id'] == pid, 'name'] = new_name
+    db['projects'] = projects_df
+    
+    return save_db(db)
+
+def delete_specific_project(project_id):
+    db = load_db()
+    pid = int(project_id)
+    
+    # 1. Удаление приходов, связанных с материалами этого проекта
+    materials_to_delete = db['materials'][db['materials']['project_id'] == pid]['id'].tolist()
+    db['shipments'] = db['shipments'][~db['shipments']['material_id'].isin(materials_to_delete)]
+    
+    # 2. Удаление материалов
+    db['materials'] = db['materials'][db['materials']['project_id'] != pid]
+
+    # 3. Удаление проекта
+    db['projects'] = db['projects'][db['projects']['id'] != pid]
+    
+    save_db(db)
+
+def clear_project_history(project_id):
+    db = load_db()
+    pid = int(project_id)
+    
+    materials_df = db['materials']
+    
+    # Идентификаторы материалов, которые НЕ относятся к этому проекту
+    materials_to_keep = materials_df[materials_df['project_id'] != pid]['id'].tolist()
+    
+    # Оставляем только те приходы, которые не связаны с этим проектом
+    db['shipments'] = db['shipments'][db['shipments']['material_id'].isin(materials_to_keep)]
+    
+    save_db(db)
+
+def load_excel_final(project_id, df):
+    db = load_db()
+    pid = int(project_id)
+    materials_df = db['materials']
+    
+    # 1. Удаляем старые материалы, связанные с этим проектом
+    materials_df = materials_df[materials_df['project_id'] != pid]
+    
+    success = 0
+    log = []
+    insert_data = []
+    
+    # 2. Подготавливаем новые данные
+    current_max_id = materials_df['id'].max() if not materials_df.empty else 0
+    
+    for i, row in df.iterrows():
+        try:
+            name = str(row.iloc[0]).strip()
+            unit = str(row.iloc[1]).strip()
+            qty_str = str(row.iloc[2]).replace(',', '.').replace('\xa0', '').strip()
+            
+            try:
+                qty = float(qty_str)
+            except:
+                qty = 0.0
+
+            if name and name.lower() != 'nan':
+                current_max_id += 1
+                insert_data.append({
+                    'id': current_max_id, 
+                    'project_id': pid, 
+                    'name': name, 
+                    'unit': unit, 
+                    'planned_qty': qty
+                })
+                success += 1
+        except Exception as e:
+            log.append(f"Ошибка строки {i}: {e}")
+            
+    # 3. Объединяем и сохраняем
+    if insert_data:
+        new_materials_df = pd.DataFrame(insert_data)
+        db['materials'] = pd.concat([materials_df, new_materials_df], ignore_index=True)
+        
+        if save_db(db):
+            return success, log
+    
+    return success, log
+
+def add_shipment(material_id, qty, user, date, store, doc_number, note, op_type='Приход'):
+    db = load_db()
+    shipments_df = db['shipments']
+    
+    new_id = shipments_df['id'].max() + 1 if not shipments_df.empty else 1
+    
+    new_row = pd.DataFrame([{
+        'id': new_id,
+        'material_id': int(material_id),
+        'qty': float(qty),
+        'user_name': user,
+        'arrival_date': date.strftime('%Y-%m-%d %H:%M:%S'),
+        'store': store,
+        'doc_number': doc_number,
+        'note': note,
+        'op_type': op_type
+    }])
+    
+    db['shipments'] = pd.concat([shipments_df, new_row], ignore_index=True)
+    
+    if save_db(db):
+        return new_id
+    return None
+
+def undo_shipment(shipment_id, current_user):
+    db = load_db()
+    shipments_df = db['shipments']
+    
+    original_data = shipments_df[shipments_df['id'] == shipment_id]
+    
+    if not original_data.empty:
+        original_data = original_data.iloc[0]
+        material_id = original_data['material_id']
+        cancel_qty = -abs(original_data['qty'])
+        
+        # Записываем операцию "Отмена"
+        new_id = shipments_df['id'].max() + 1 if not shipments_df.empty else 1
+        
+        new_row = pd.DataFrame([{
+            'id': new_id,
+            'material_id': material_id,
+            'qty': cancel_qty,
+            'user_name': current_user,
+            'arrival_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'store': original_data['store'],
+            'doc_number': original_data['doc_number'],
+            'note': f"ОТМЕНА операции ID:{shipment_id}. Оригинальное Примечание: {original_data['note']}",
+            'op_type': 'Отмена'
+        }])
+        
+        db['shipments'] = pd.concat([shipments_df, new_row], ignore_index=True)
+        
+        if save_db(db):
+            return True
+    return False
+
+def get_data(project_id):
+    pid = int(project_id)
+    db = load_db()
+    
+    materials_df = db['materials']
+    shipments_df = db['shipments']
+    
+    project_materials = materials_df[materials_df['project_id'] == pid].copy()
+    
+    if project_materials.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # 1. Получение факта (total)
+    if not shipments_df.empty:
+        shipments_agg = shipments_df.groupby('material_id')['qty'].sum().reset_index()
+        shipments_agg.rename(columns={'qty': 'total'}, inplace=True)
+        
+        full_df = pd.merge(project_materials, shipments_agg, left_on='id', right_on='material_id', how='left')
+        full_df['total'] = full_df['total'].fillna(0)
+    else:
+        full_df = project_materials.copy()
+        full_df['total'] = 0.0
+    
+    # 2. Расчет прогресса
+    full_df['prog'] = full_df.apply(lambda x: x['total'] / x['planned_qty'] if x['planned_qty'] > 0 else 0, axis=1)
+
+    # 3. История операций
+    shipments_filtered = shipments_df[shipments_df['material_id'].isin(project_materials['id'])]
+    
+    if not shipments_filtered.empty:
+        history_df = pd.merge(shipments_filtered, project_materials[['id', 'name', 'unit']], 
+                             left_on='material_id', right_on='id', how='left', suffixes=('', '_mat'))
+        
+        history_df.rename(columns={
+            'name': 'Материал', 
+            'qty': 'Кол-во', 
+            'op_type': 'Тип опер.', 
+            'user_name': 'Кто', 
+            'store': 'Магазин', 
+            'doc_number': '№ Док.', 
+            'note': 'Примечание', 
+            'arrival_date': 'Дата',
+            'unit': 'Ед. изм.' # Добавляем единицу измерения в историю
+        }, inplace=True)
+        
+        history_df = history_df.sort_values(by='Дата', ascending=False)
+        history_df = history_df[['id', 'Материал', 'Ед. изм.', 'Кол-во', 'Тип опер.', 'Кто', 'Магазин', '№ Док.', 'Примечание', 'Дата']]
+    else:
+        history_df = pd.DataFrame(columns=['id', 'Материал', 'Ед. изм.', 'Кол-во', 'Тип опер.', 'Кто', 'Магазин', '№ Док.', 'Примечание', 'Дата'])
+
+    return full_df, history_df
+
+def submit_entry_callback(material_id, qty, user, input_key, current_pid, store, doc_number, note):
+    if user == "Выберите сотрудника..." or not user:
+        st.toast("⚠️ Ошибка: Выберите фамилию сотрудника!", icon="❌")
+        return
+
+    if qty <= 0:
+        st.toast("⚠️ Ошибка: Количество должно быть больше 0!", icon="❌")
+        return
+
+    try:
+        latest_shipment_id = add_shipment(material_id, qty, user, datetime.now(), store, doc_number, note, op_type='Приход') 
+        
+        if latest_shipment_id:
+            st.toast("✅ Данные успешно внесены!", icon="💾")
+            st.session_state['last_shipment_id'] = latest_shipment_id
+            st.session_state['last_shipment_pid'] = current_pid 
+            st.session_state['current_user'] = user 
+            
+            st.session_state[input_key] = 0.0
+            st.rerun() # Перезапуск для обновления данных
+        else:
+            st.toast("Ошибка записи в Streamlit Secrets.", icon="🔥")
+        
+    except Exception as e:
+        st.toast(f"Ошибка записи: {e}", icon="🔥")
+
+
+# #######################################################
+# 🛠️ ФУНКЦИИ УТИЛИТ
+# #######################################################
+
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -87,224 +384,13 @@ def find_best_match(query, choices, threshold):
         return result[0], result[1]
     return None, 0
 
-# #######################################################
-# 💾 ФУНКЦИИ УПРАВЛЕНИЯ БАЗОЙ ДАННЫХ (PostgreSQL)
-# #######################################################
-
-def init_db():
-    # Создание таблиц (PostgreSQL синтаксис)
-    try:
-        conn.query('''
-            CREATE TABLE IF NOT EXISTS projects (
-                id SERIAL PRIMARY KEY, 
-                name TEXT UNIQUE NOT NULL
-            )
-        ''', result='auto')
-        conn.query('''
-            CREATE TABLE IF NOT EXISTS materials (
-                id SERIAL PRIMARY KEY, 
-                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, 
-                name TEXT NOT NULL, 
-                unit TEXT, 
-                planned_qty REAL NOT NULL
-            )
-        ''', result='auto')
-        conn.query('''
-            CREATE TABLE IF NOT EXISTS shipments (
-                id SERIAL PRIMARY KEY, 
-                material_id INTEGER REFERENCES materials(id) ON DELETE CASCADE, 
-                qty REAL NOT NULL, 
-                user_name TEXT, 
-                arrival_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
-                store TEXT, 
-                doc_number TEXT, 
-                note TEXT, 
-                op_type TEXT NOT NULL
-            )
-        ''', result='auto')
-    except Exception as e:
-        # В случае ошибки подключения/создания, просто пропускаем
-        pass
-
-@st.cache_data(ttl=300)
-def get_projects():
-    # Используем TTL=0 для некэшированного чтения при первом запуске
-    df = conn.query("SELECT * FROM projects ORDER BY name", ttl=0)
-    return df
-
-def add_project(name):
-    try:
-        conn.query("INSERT INTO projects (name) VALUES (%(name)s)", params={"name": name}, result='auto')
-        st.cache_data.clear()
-        return True
-    except:
-        return False
-
-def update_project_name(project_id, new_name):
-    try:
-        conn.query("UPDATE projects SET name = %(new_name)s WHERE id = %(id)s", params={"new_name": new_name, "id": int(project_id)}, result='auto')
-        st.cache_data.clear()
-        return True
-    except:
-        return False
-
-def delete_specific_project(project_id):
-    pid = int(project_id)
-    # CASCADE удалит связанные материалы и их приходы
-    conn.query("DELETE FROM projects WHERE id = %(pid)s", params={"pid": pid}, result='auto')
-    st.cache_data.clear()
-
-def clear_project_history(project_id):
-    pid = int(project_id)
-    # Удаляем только приходы, связанные с материалами этого проекта
-    conn.query("DELETE FROM shipments WHERE material_id IN (SELECT id FROM materials WHERE project_id=%(pid)s)", params={"pid": pid}, result='auto')
-    st.cache_data.clear()
-
-def load_excel_final(project_id, df):
-    pid = int(project_id)
-    # 1. Удаляем все старые материалы, чтобы обновить план
-    conn.query("DELETE FROM materials WHERE project_id = %(pid)s", params={"pid": pid}, result='auto')
-    
-    success = 0
-    log = []
-    insert_data = []
-    
-    # 2. Подготавливаем данные для массовой вставки
-    for i, row in df.iterrows():
-        try:
-            name = str(row.iloc[0]).strip()
-            unit = str(row.iloc[1]).strip()
-            qty_str = str(row.iloc[2]).replace(',', '.').replace('\xa0', '').strip()
-            try:
-                qty = float(qty_str)
-            except:
-                qty = 0.0
-
-            if name and name.lower() != 'nan':
-                insert_data.append({"project_id": pid, "name": name, "unit": unit, "planned_qty": qty})
-                success += 1
-        except Exception as e:
-            log.append(f"Ошибка строки {i}: {e}")
-            
-    # 3. Массовая вставка (более эффективна для PostgreSQL)
-    if insert_data:
-        insert_df = pd.DataFrame(insert_data)
-        conn.insert(insert_df, table="materials", if_exists='append')
-    
-    st.cache_data.clear()
-    return success, log
-
-def add_shipment(material_id, qty, user, date, store, doc_number, note, op_type='Приход'):
-    # Вставка нового прихода
-    conn.query(
-        """
-        INSERT INTO shipments 
-        (material_id, qty, user_name, arrival_date, store, doc_number, note, op_type) 
-        VALUES (%(material_id)s, %(qty)s, %(user)s, %(date)s, %(store)s, %(doc_number)s, %(note)s, %(op_type)s)
-        """,
-        params={"material_id": int(material_id), "qty": float(qty), "user": user, "date": date, "store": store, "doc_number": doc_number, "note": note, "op_type": op_type},
-        result='auto'
-    )
-    return True 
-
-def undo_shipment(shipment_id, current_user):
-    # Получаем данные последней операции
-    original_data_df = conn.query("SELECT id, material_id, qty, store, doc_number, note FROM shipments WHERE id = %(shipment_id)s",
-                                 params={"shipment_id": shipment_id}, ttl=0)
-    
-    if not original_data_df.empty:
-        original_data = original_data_df.iloc[0]
-        material_id = original_data['material_id']
-        # Инвертируем количество для отмены
-        cancel_qty = -abs(original_data['qty'])
-        
-        # Записываем операцию "Отмена"
-        conn.query(
-            """
-            INSERT INTO shipments 
-            (material_id, qty, user_name, arrival_date, store, doc_number, note, op_type) 
-            VALUES (%(material_id)s, %(qty)s, %(user)s, %(date)s, %(store)s, %(doc_number)s, %(note)s, 'Отмена')
-            """,
-            params={
-                "material_id": material_id, "qty": cancel_qty, "user": current_user, "date": datetime.now(), 
-                "store": original_data['store'], "doc_number": original_data['doc_number'], 
-                "note": f"ОТМЕНА операции ID:{shipment_id}. Оригинальное Примечание: {original_data['note']}"
-            },
-            result='auto'
-        )
-        st.cache_data.clear()
-        return True
-    return False
-
-@st.cache_data(ttl=5)
-def get_data(project_id):
-    pid = int(project_id)
-    
-    # Запрос для получения плана и факта (JOIN и SUM)
-    full_df = conn.query("""
-        SELECT m.id, m.name, m.unit, m.planned_qty, COALESCE(SUM(s.qty), 0) AS total
-        FROM materials m
-        LEFT JOIN shipments s ON m.id = s.material_id
-        WHERE m.project_id = %(pid)s
-        GROUP BY m.id, m.name, m.unit, m.planned_qty
-        ORDER BY m.name
-    """, params={"pid": pid})
-    
-    # Запрос для получения истории операций (TO_CHAR для форматирования даты в PostgreSQL)
-    history_df = conn.query("""
-        SELECT s.id, m.name AS "Материал", s.qty AS "Кол-во", s.op_type AS "Тип опер.", s.user_name AS "Кто", 
-               s.store AS "Магазин", s.doc_number AS "№ Док.", s.note AS "Примечание", 
-               TO_CHAR(s.arrival_date, 'DD.MM.YYYY HH24:MI') AS "Дата"
-        FROM shipments s 
-        JOIN materials m ON s.material_id = m.id
-        WHERE m.project_id = %(pid)s
-        ORDER BY s.arrival_date DESC
-    """, params={"pid": pid})
-    
-    if full_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-    
-    full_df['prog'] = full_df.apply(lambda x: x['total'] / x['planned_qty'] if x['planned_qty'] > 0 else 0, axis=1)
-    
-    return full_df, history_df
-
-def submit_entry_callback(material_id, qty, user, input_key, current_pid, store, doc_number, note):
-    if user == "Выберите сотрудника..." or not user:
-        st.toast("⚠️ Ошибка: Выберите фамилию сотрудника!", icon="❌")
-        return
-
-    if qty <= 0:
-        st.toast("⚠️ Ошибка: Количество должно быть больше 0!", icon="❌")
-        return
-
-    try:
-        add_shipment(material_id, qty, user, datetime.now(), store, doc_number, note, op_type='Приход') 
-        st.toast("✅ Данные успешно внесены!", icon="💾")
-        
-        # Находим ID последней операции для функционала "Отмена"
-        latest_id_df = conn.query("SELECT id FROM shipments ORDER BY id DESC LIMIT 1", ttl=0)
-        latest_shipment_id = latest_id_df.iloc[0]['id'] if not latest_id_df.empty else None
-
-        st.session_state['last_shipment_id'] = latest_shipment_id
-        st.session_state['last_shipment_pid'] = current_pid 
-        st.session_state['current_user'] = user 
-        
-        st.cache_data.clear()
-        st.session_state[input_key] = 0.0
-        
-    except Exception as e:
-        st.toast(f"Ошибка записи: {e}", icon="🔥")
-
-# --- ФУНКЦИЯ ДЛЯ СОПОСТАВЛЕНИЯ (Без изменений) ---
 def compare_with_stock_excel(file_source, data_df):
-    
+    # ... (логика сравнения с Excel/URL остается без изменений, так как не зависит от БД)
     stock_df = pd.DataFrame()
     
-    # 1. Загрузка файла по URL
     if isinstance(file_source, str):
         original_url = file_source.strip()
         
-        # Автоматическая конвертация ссылки Google Таблиц
         if "docs.google.com/spreadsheets/d/" in original_url and "/edit" in original_url:
             try:
                 start_index = original_url.find('/d/') + 3
@@ -328,8 +414,6 @@ def compare_with_stock_excel(file_source, data_df):
     else:
         st.error("Непредвиденный источник файла.")
         return pd.DataFrame()
-    
-    # --- ЛОГИКА СОПОСТАВЛЕНИЯ С FUZZY MATCH ---
     
     MIN_COLS = 17 
     if stock_df.shape[1] < MIN_COLS:
@@ -368,7 +452,6 @@ def compare_with_stock_excel(file_source, data_df):
             if best_match not in matched_stock_data:
                 match_data = stock_df_cleaned[stock_df_cleaned['Name_Stock'].astype(str).str.strip().str.lower() == best_match]
                 
-                # Агрегирование 
                 total_qty = match_data['Qty_Stock'].sum()
                 all_stores = "; ".join(match_data['Store_Stock'].astype(str).unique().tolist())
                 all_shelves = "; ".join(match_data['Shelf_Stock'].astype(str).unique().tolist())
@@ -379,7 +462,6 @@ def compare_with_stock_excel(file_source, data_df):
                     'Shelf_Stock_Agg': all_shelves
                 }
 
-    # 5. Объединение результатов
     matched_df = pd.DataFrame.from_dict(matched_stock_data, orient='index').reset_index()
     matched_df.rename(columns={'index': 'Name_Stock_Match'}, inplace=True)
     
@@ -390,7 +472,6 @@ def compare_with_stock_excel(file_source, data_df):
         how='left'
     ).drop_duplicates(subset=['Name_Project']) 
     
-    # 6. Очистка и форматирование результата
     result_df = final_df[[
         'Name_Project', 'unit', 'Qty_Stock_Agg', 'Store_Stock_Agg', 'Shelf_Stock_Agg', 'Match_Score'
     ]].copy()
@@ -401,7 +482,6 @@ def compare_with_stock_excel(file_source, data_df):
     result_df['Склады'] = result_df['Склады'].fillna('—')
     result_df['Номера полок'] = result_df['Номера полок'].fillna('—') 
     
-    # Форматируем Сходство
     result_df['Сходство (%)'] = result_df['Сходство (%)'].apply(lambda x: f"{int(x)}%")
     
     st.success("🏁 Сопоставление завершено.")
@@ -415,28 +495,23 @@ def compare_with_stock_excel(file_source, data_df):
 if not check_password():
     st.stop()
 
-# Инициализируем БД (создаст таблицы, если они не существуют)
-init_db()
-
-# --- САЙДБАР (Обновленная логика бэкапа) ---
+# --- САЙДБАР ---
 with st.sidebar:
     st.header("📂 Управление объектами")
     new_name = st.text_input("Имя нового объекта")
     if st.button("Добавить объект"):
         if new_name:
             if add_project(new_name):
-                st.success("Создано!")
+                st.toast("Объект создан!")
                 st.rerun()
             else:
                 st.error("Такое имя уже есть")
     
     st.divider()
     
-    # Блок резервного копирования без работы с локальным файлом
     with st.expander("💾 Резервное копирование"):
-        st.info("Внимание: Ваша база данных хранится на Supabase (PostgreSQL). Резервное копирование и восстановление осуществляется через панель управления Supabase.")
-        if st.button("Открыть панель Supabase"):
-            st.link_button("Supabase Dashboard", url="https://app.supabase.com/")
+        st.info("Данные хранятся в файле `.streamlit/secrets.toml`.")
+        st.warning("Для резервного копирования сохраните содержимое секции `[storage]` из этого файла.")
 
     st.divider()
     if st.button("Выйти из аккаунта"):
@@ -445,6 +520,7 @@ with st.sidebar:
 # --- ОСНОВНОЕ ОКНО ---
 st.title("🏗️Список всех объектов")
 
+# Проверка и загрузка данных
 projects = get_projects()
 
 if projects.empty:
@@ -483,7 +559,7 @@ else:
                 confirm_delete_key = f"confirm_delete_{pid}"
 
                 with col_del1:
-                    st.write("**Сброс данных** (только история)")
+                    st.write("**Сброс данных** (только история приходов)")
                     if not st.session_state.get(confirm_reset_key, False):
                         if st.button("🧹 Сбросить историю", key=f"pre_reset_{pid}"):
                             st.session_state[confirm_reset_key] = True
@@ -583,13 +659,12 @@ else:
                     val = st.number_input("Кол-во", min_value=0.0, step=1.0, key=input_key)
                 
                 with c3:
-                    who = st.selectbox("Кто принял", WORKERS_LIST, key=f"who_{pid}")
+                    who = st.selectbox("Кто принял", WORKERS_LIST, key=f"who_{pid}", value=st.session_state.get('current_user', WORKERS_LIST[0]))
                 
                 # --- СКРЫТИЕ ДОПОЛНИТЕЛЬНЫХ ПОЛЕЙ ПОД EXPANDER ---
                 with st.expander("📝 Дополнительные данные (Магазин, Док. №, Прим.)"):
                     r2_c1, r2_c2 = st.columns(2)
                     
-                    # Использование Session State для сохранения значений между reruns
                     store_key = f"store_{pid}"
                     doc_key = f"doc_{pid}"
                     note_key = f"note_{pid}"
@@ -654,7 +729,7 @@ else:
                             "URL-ссылка на Excel/Google Таблицу", 
                             value=current_url, 
                             key=f"input_url_{pid}",
-                            help="Вставьте ссылку Google Таблицы или прямую ссылку на Excel-файл. Нажмите 'Сохранить и сравнить', чтобы записать ее."
+                            help="Вставьте ссылку Google Таблицы (с экспортом в xlsx) или прямую ссылку на Excel-файл."
                         )
                         
                     with col_btn:
@@ -759,12 +834,13 @@ else:
 
                         
                         display_df = hist_df.copy()
+                        # Форматируем столбец "Кол-во"
                         display_df['Кол-во'] = display_df.apply(format_qty_and_type, axis=1)
 
-                        # Выводим HTML-таблицу для форматированного текста
+                        # Отображаем как HTML для цвета
                         st.markdown(display_df.drop(columns=['id', 'Тип опер.']).to_html(escape=False, index=False), unsafe_allow_html=True)
                         
-                        # Для скачивания используем исходный, неформатированный DataFrame
+                        # Скачивание (используем исходный DataFrame без HTML-разметки)
                         excel_data = to_excel(hist_df.drop(columns=['id']))
                         st.download_button(
                             label="📥 Скачать историю (Excel)",
@@ -773,6 +849,3 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
-
-
-
