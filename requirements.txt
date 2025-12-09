@@ -3,4 +3,5 @@ streamlit
 pandas
 requests
 thefuzz
+psycopg2-binary
 openpyxl 
