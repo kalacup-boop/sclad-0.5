@@ -20,7 +20,7 @@ st.set_page_config(page_title="Склад обьекта", layout="wide")
 
 try:
     # Используем st.connection для подключения к Supabase (PostgreSQL)
-    conn = st.connection("supabase", type="sql")
+    conn = st.connection("test_conn", type="sql")
 except Exception as e:
     st.error(f"❌ Ошибка подключения к базе данных Supabase. Проверьте настройки secrets.toml и статус проекта: {e}")
     # st.stop() # Закомментировано для удобства тестирования, но в продакшене лучше оставить.
@@ -765,3 +765,4 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"dl_{pid}"
                         )
+
